@@ -526,7 +526,7 @@ func PrepareCompareDiff(
 		return true
 	}
 
-	diff, err := gitdiff.GetDiffRangeWithWhitespaceBehavior(models.RepoPath(headUser.Name, headRepo.Name),
+	diff, err := gitdiff.GetDiffRangeWithWhitespaceBehavior(headGitRepo,
 		compareInfo.MergeBase, headCommitID, setting.Git.MaxGitDiffLines,
 		setting.Git.MaxGitDiffLineCharacters, setting.Git.MaxGitDiffFiles, whitespaceBehavior)
 	if err != nil {
@@ -551,14 +551,12 @@ func PrepareCompareDiff(
 		return false
 	}
 
-	compareInfo.Commits = models.ValidateCommitsWithEmails(compareInfo.Commits)
-	compareInfo.Commits = models.ParseCommitsWithSignature(compareInfo.Commits, headRepo)
-	compareInfo.Commits = models.ParseCommitsWithStatus(compareInfo.Commits, headRepo)
-	ctx.Data["Commits"] = compareInfo.Commits
-	ctx.Data["CommitCount"] = compareInfo.Commits.Len()
+	commits := models.ConvertFromGitCommit(compareInfo.Commits, headRepo)
+	ctx.Data["Commits"] = commits
+	ctx.Data["CommitCount"] = len(commits)
 
-	if compareInfo.Commits.Len() == 1 {
-		c := compareInfo.Commits.Front().Value.(models.SignCommitWithStatuses)
+	if len(commits) == 1 {
+		c := commits[0]
 		title = strings.TrimSpace(c.UserCommit.Summary())
 
 		body := strings.Split(strings.TrimSpace(c.UserCommit.Message()), "\n")
@@ -618,11 +616,14 @@ func getBranchesAndTagsForRepo(user *models.User, repo *models.Repository) (bool
 // CompareDiff show different from one commit to another commit
 func CompareDiff(ctx *context.Context) {
 	headUser, headRepo, headGitRepo, compareInfo, baseBranch, headBranch := ParseCompareInfo(ctx)
-
+	defer func() {
+		if headGitRepo != nil {
+			headGitRepo.Close()
+		}
+	}()
 	if ctx.Written() {
 		return
 	}
-	defer headGitRepo.Close()
 
 	nothingToCompare := PrepareCompareDiff(ctx, headUser, headRepo, headGitRepo, compareInfo, baseBranch, headBranch,
 		gitdiff.GetWhitespaceFlag(ctx.Data["WhitespaceBehavior"].(string)))
@@ -702,9 +703,9 @@ func ExcerptBlob(ctx *context.Context) {
 	idxRight := ctx.FormInt("right")
 	leftHunkSize := ctx.FormInt("left_hunk_size")
 	rightHunkSize := ctx.FormInt("right_hunk_size")
-	anchor := ctx.Form("anchor")
-	direction := ctx.Form("direction")
-	filePath := ctx.Form("path")
+	anchor := ctx.FormString("anchor")
+	direction := ctx.FormString("direction")
+	filePath := ctx.FormString("path")
 	gitRepo := ctx.Repo.GitRepo
 	chunkSize := gitdiff.BlobExcerptChunkSize
 	commit, err := gitRepo.GetCommit(commitID)

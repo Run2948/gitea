@@ -189,6 +189,7 @@ var (
 	PasswordComplexity                 []string
 	PasswordHashAlgo                   string
 	PasswordCheckPwn                   bool
+	SuccessfulTokensCacheSize          int
 
 	// UI settings
 	UI = struct {
@@ -346,12 +347,6 @@ var (
 	CSRFCookieHTTPOnly = true
 
 	ManifestData string
-
-	// Mirror settings
-	Mirror struct {
-		DefaultInterval time.Duration
-		MinInterval     time.Duration
-	}
 
 	// API settings
 	API = struct {
@@ -840,6 +835,7 @@ func NewContext() {
 	PasswordHashAlgo = sec.Key("PASSWORD_HASH_ALGO").MustString("pbkdf2")
 	CSRFCookieHTTPOnly = sec.Key("CSRF_COOKIE_HTTP_ONLY").MustBool(true)
 	PasswordCheckPwn = sec.Key("PASSWORD_CHECK_PWN").MustBool(false)
+	SuccessfulTokensCacheSize = sec.Key("SUCCESSFUL_TOKENS_CACHE_SIZE").MustInt(20)
 
 	InternalToken = loadInternalToken(sec)
 
@@ -936,17 +932,7 @@ func NewContext() {
 
 	newGit()
 
-	sec = Cfg.Section("mirror")
-	Mirror.MinInterval = sec.Key("MIN_INTERVAL").MustDuration(10 * time.Minute)
-	Mirror.DefaultInterval = sec.Key("DEFAULT_INTERVAL").MustDuration(8 * time.Hour)
-	if Mirror.MinInterval.Minutes() < 1 {
-		log.Warn("Mirror.MinInterval is too low")
-		Mirror.MinInterval = 1 * time.Minute
-	}
-	if Mirror.DefaultInterval < Mirror.MinInterval {
-		log.Warn("Mirror.DefaultInterval is less than Mirror.MinInterval")
-		Mirror.DefaultInterval = time.Hour * 8
-	}
+	newMirror()
 
 	Langs = Cfg.Section("i18n").Key("LANGS").Strings(",")
 	if len(Langs) == 0 {
@@ -1193,6 +1179,7 @@ func NewServices() {
 	newMailService()
 	newRegisterMailService()
 	newNotifyMailService()
+	newProxyService()
 	newWebhookService()
 	newMigrationsService()
 	newIndexerService()
