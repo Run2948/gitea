@@ -55,7 +55,11 @@ func LogNameStatusRepo(ctx context.Context, repository, head, treepath string, p
 
 	go func() {
 		stderr := strings.Builder{}
-		err := NewCommandContext(ctx, args...).RunInDirFullPipeline(repository, stdoutWriter, &stderr, nil)
+		err := NewCommand(ctx, args...).Run(&RunOpts{
+			Dir:    repository,
+			Stdout: stdoutWriter,
+			Stderr: &stderr,
+		})
 		if err != nil {
 			_ = stdoutWriter.CloseWithError(ConcatenateError(err, (&stderr).String()))
 		} else {
@@ -350,6 +354,9 @@ heaploop:
 		}
 		current, err := g.Next(treepath, path2idx, changed, maxpathlen)
 		if err != nil {
+			if err == context.DeadlineExceeded {
+				break heaploop
+			}
 			g.Close()
 			return nil, err
 		}
