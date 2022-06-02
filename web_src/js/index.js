@@ -36,6 +36,7 @@ import {
   initRepoIssueTimeTracking,
   initRepoIssueWipTitle,
   initRepoPullRequestMergeInstruction,
+  initRepoPullRequestAllowMaintainerEdit,
   initRepoPullRequestReview,
 } from './features/repo-issue.js';
 import {
@@ -69,6 +70,7 @@ import {
   initRepoSettingsCollaboration,
   initRepoSettingSearchTeamBox,
 } from './features/repo-settings.js';
+import {initViewedCheckboxListenerFor} from './features/pull-view-file.js';
 import {initOrgTeamSearchRepoBox, initOrgTeamSettings} from './features/org-team.js';
 import {initUserAuthWebAuthn, initUserAuthWebAuthnRegister} from './features/user-auth-webauthn.js';
 import {initRepoRelease, initRepoReleaseEditor} from './features/repo-release.js';
@@ -158,6 +160,7 @@ $(document).ready(() => {
   initRepoMigrationStatusChecker();
   initRepoProject();
   initRepoPullRequestMergeInstruction();
+  initRepoPullRequestAllowMaintainerEdit();
   initRepoPullRequestReview();
   initRepoRelease();
   initRepoReleaseEditor();
@@ -176,6 +179,6 @@ $(document).ready(() => {
   initUserAuthWebAuthn();
   initUserAuthWebAuthnRegister();
   initUserSettings();
-
+  initViewedCheckboxListenerFor();
   checkAppUrl();
 });

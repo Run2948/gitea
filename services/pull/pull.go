@@ -24,9 +24,14 @@ import (
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/notification"
 	"code.gitea.io/gitea/modules/process"
+	repo_module "code.gitea.io/gitea/modules/repository"
 	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/sync"
 	issue_service "code.gitea.io/gitea/services/issue"
 )
+
+// TODO: use clustered lock (unique queue? or *abuse* cache)
+var pullWorkingPool = sync.NewExclusivePool()
 
 // NewPullRequest creates new pull request with labels for repository.
 func NewPullRequest(ctx context.Context, repo *repo_model.Repository, pull *models.Issue, labelIDs []int64, uuids []string, pr *models.PullRequest, assigneeIDs []int64) error {
@@ -124,6 +129,9 @@ func NewPullRequest(ctx context.Context, repo *repo_model.Repository, pull *mode
 
 // ChangeTargetBranch changes the target branch of this pull request, as the given user.
 func ChangeTargetBranch(ctx context.Context, pr *models.PullRequest, doer *user_model.User, targetBranch string) (err error) {
+	pullWorkingPool.CheckIn(fmt.Sprint(pr.ID))
+	defer pullWorkingPool.CheckOut(fmt.Sprint(pr.ID))
+
 	// Current target branch is already the same
 	if pr.BaseBranch == targetBranch {
 		return nil
@@ -230,7 +238,7 @@ func checkForInvalidation(ctx context.Context, requests models.PullRequestList, 
 	}
 	go func() {
 		// FIXME: graceful: We need to tell the manager we're doing something...
-		err := requests.InvalidateCodeComments(doer, gitRepo, branch)
+		err := requests.InvalidateCodeComments(ctx, doer, gitRepo, branch)
 		if err != nil {
 			log.Error("PullRequestList.InvalidateCodeComments: %v", err)
 		}
@@ -246,7 +254,7 @@ func AddTestPullRequestTask(doer *user_model.User, repoID int64, branch string, 
 	graceful.GetManager().RunWithShutdownContext(func(ctx context.Context) {
 		// There is no sensible way to shut this down ":-("
 		// If you don't let it run all the way then you will lose data
-		// FIXME: graceful: AddTestPullRequestTask needs to become a queue!
+		// TODO: graceful: AddTestPullRequestTask needs to become a queue!
 
 		prs, err := models.GetUnmergedPullRequestsByHeadInfo(repoID, branch)
 		if err != nil {
@@ -282,7 +290,7 @@ func AddTestPullRequestTask(doer *user_model.User, repoID int64, branch string, 
 						if err != nil {
 							log.Error("GetDiverging: %v", err)
 						} else {
-							err = pr.UpdateCommitDivergence(divergence.Ahead, divergence.Behind)
+							err = pr.UpdateCommitDivergence(ctx, divergence.Ahead, divergence.Behind)
 							if err != nil {
 								log.Error("UpdateCommitDivergence: %v", err)
 							}
@@ -328,7 +336,7 @@ func AddTestPullRequestTask(doer *user_model.User, repoID int64, branch string, 
 					log.Error("GetDiverging: %v", err)
 				}
 			} else {
-				err = pr.UpdateCommitDivergence(divergence.Ahead, divergence.Behind)
+				err = pr.UpdateCommitDivergence(ctx, divergence.Ahead, divergence.Behind)
 				if err != nil {
 					log.Error("UpdateCommitDivergence: %v", err)
 				}
@@ -341,14 +349,14 @@ func AddTestPullRequestTask(doer *user_model.User, repoID int64, branch string, 
 // checkIfPRContentChanged checks if diff to target branch has changed by push
 // A commit can be considered to leave the PR untouched if the patch/diff with its merge base is unchanged
 func checkIfPRContentChanged(ctx context.Context, pr *models.PullRequest, oldCommitID, newCommitID string) (hasChanged bool, err error) {
-	if err = pr.LoadHeadRepo(); err != nil {
+	if err = pr.LoadHeadRepoCtx(ctx); err != nil {
 		return false, fmt.Errorf("LoadHeadRepo: %v", err)
 	} else if pr.HeadRepo == nil {
 		// corrupt data assumed changed
 		return true, nil
 	}
 
-	if err = pr.LoadBaseRepo(); err != nil {
+	if err = pr.LoadBaseRepoCtx(ctx); err != nil {
 		return false, fmt.Errorf("LoadBaseRepo: %v", err)
 	}
 
@@ -419,13 +427,13 @@ func PushToBaseRepo(ctx context.Context, pr *models.PullRequest) (err error) {
 func pushToBaseRepoHelper(ctx context.Context, pr *models.PullRequest, prefixHeadBranch string) (err error) {
 	log.Trace("PushToBaseRepo[%d]: pushing commits to base repo '%s'", pr.BaseRepoID, pr.GetGitRefName())
 
-	if err := pr.LoadHeadRepo(); err != nil {
+	if err := pr.LoadHeadRepoCtx(ctx); err != nil {
 		log.Error("Unable to load head repository for PR[%d] Error: %v", pr.ID, err)
 		return err
 	}
 	headRepoPath := pr.HeadRepo.RepoPath()
 
-	if err := pr.LoadBaseRepo(); err != nil {
+	if err := pr.LoadBaseRepoCtx(ctx); err != nil {
 		log.Error("Unable to load base repository for PR[%d] Error: %v", pr.ID, err)
 		return err
 	}
@@ -445,7 +453,7 @@ func pushToBaseRepoHelper(ctx context.Context, pr *models.PullRequest, prefixHea
 		Branch: prefixHeadBranch + pr.HeadBranch + ":" + gitRefName,
 		Force:  true,
 		// Use InternalPushingEnvironment here because we know that pre-receive and post-receive do not run on a refs/pulls/...
-		Env: models.InternalPushingEnvironment(pr.Issue.Poster, pr.BaseRepo),
+		Env: repo_module.InternalPushingEnvironment(pr.Issue.Poster, pr.BaseRepo),
 	}); err != nil {
 		if git.IsErrPushOutOfDate(err) {
 			// This should not happen as we're using force!
@@ -474,7 +482,7 @@ func pushToBaseRepoHelper(ctx context.Context, pr *models.PullRequest, prefixHea
 // UpdateRef update refs/pull/id/head directly for agit flow pull request
 func UpdateRef(ctx context.Context, pr *models.PullRequest) (err error) {
 	log.Trace("UpdateRef[%d]: upgate pull request ref in base repo '%s'", pr.ID, pr.GetGitRefName())
-	if err := pr.LoadBaseRepo(); err != nil {
+	if err := pr.LoadBaseRepoCtx(ctx); err != nil {
 		log.Error("Unable to load base repository for PR[%d] Error: %v", pr.ID, err)
 		return err
 	}
@@ -785,7 +793,7 @@ func getAllCommitStatus(gitRepo *git.Repository, pr *models.PullRequest) (status
 		return nil, nil, shaErr
 	}
 
-	statuses, _, err = models.GetLatestCommitStatus(pr.BaseRepo.ID, sha, db.ListOptions{})
+	statuses, _, err = models.GetLatestCommitStatus(db.DefaultContext, pr.BaseRepo.ID, sha, db.ListOptions{})
 	lastStatus = models.CalcCommitStatus(statuses)
 	return statuses, lastStatus, err
 }
@@ -793,7 +801,7 @@ func getAllCommitStatus(gitRepo *git.Repository, pr *models.PullRequest) (status
 // IsHeadEqualWithBranch returns if the commits of branchName are available in pull request head
 func IsHeadEqualWithBranch(ctx context.Context, pr *models.PullRequest, branchName string) (bool, error) {
 	var err error
-	if err = pr.LoadBaseRepo(); err != nil {
+	if err = pr.LoadBaseRepoCtx(ctx); err != nil {
 		return false, err
 	}
 	baseGitRepo, closer, err := git.RepositoryFromContextOrOpen(ctx, pr.BaseRepo.RepoPath())
@@ -807,7 +815,7 @@ func IsHeadEqualWithBranch(ctx context.Context, pr *models.PullRequest, branchNa
 		return false, err
 	}
 
-	if err = pr.LoadHeadRepo(); err != nil {
+	if err = pr.LoadHeadRepoCtx(ctx); err != nil {
 		return false, err
 	}
 	var headGitRepo *git.Repository

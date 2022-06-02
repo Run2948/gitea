@@ -20,8 +20,8 @@ import (
 	pull_service "code.gitea.io/gitea/services/pull"
 )
 
-// ProcRecive handle proc receive work
-func ProcRecive(ctx *context.PrivateContext, opts *private.HookOptions) []private.HookProcReceiveRefResult {
+// ProcReceive handle proc receive work
+func ProcReceive(ctx *context.PrivateContext, opts *private.HookOptions) []private.HookProcReceiveRefResult {
 	// TODO: Add more options?
 	var (
 		topicBranch string
@@ -177,7 +177,7 @@ func ProcRecive(ctx *context.PrivateContext, opts *private.HookOptions) []privat
 		}
 
 		// update exist pull request
-		if err := pr.LoadBaseRepo(); err != nil {
+		if err := pr.LoadBaseRepoCtx(ctx); err != nil {
 			log.Error("Unable to load base repository for PR[%d] Error: %v", pr.ID, err)
 			ctx.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"Err": fmt.Sprintf("Unable to load base repository for PR[%d] Error: %v", pr.ID, err),
