@@ -27,7 +27,6 @@ import (
 	"code.gitea.io/gitea/modules/git"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/references"
-	"code.gitea.io/gitea/modules/setting"
 	api "code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/modules/timeutil"
 	"code.gitea.io/gitea/modules/util"
@@ -223,7 +222,7 @@ func (issue *Issue) GetPullRequest() (pr *PullRequest, err error) {
 		return nil, err
 	}
 	pr.Issue = issue
-	return
+	return pr, err
 }
 
 // LoadLabels loads labels
@@ -255,7 +254,7 @@ func (issue *Issue) loadPoster(ctx context.Context) (err error) {
 			return
 		}
 	}
-	return
+	return err
 }
 
 func (issue *Issue) loadPullRequest(ctx context.Context) (err error) {
@@ -311,7 +310,7 @@ func (issue *Issue) loadReactions(ctx context.Context) (err error) {
 		return err
 	}
 	// Load reaction user data
-	if _, err := ReactionList(reactions).LoadUsers(ctx, issue.Repo); err != nil {
+	if _, err := reactions.LoadUsers(ctx, issue.Repo); err != nil {
 		return err
 	}
 
@@ -1430,7 +1429,7 @@ func issuePullAccessibleRepoCond(repoIDstr string, userID int64, org *organizati
 		cond = cond.And(
 			builder.Or(
 				repo_model.UserOwnedRepoCond(userID),                          // owned repos
-				repo_model.UserCollaborationRepoCond(repoIDstr, userID),       // collaboration repos
+				repo_model.UserAccessRepoCond(repoIDstr, userID),              // user can access repo in a unit independent way
 				repo_model.UserAssignedRepoCond(repoIDstr, userID),            // user has been assigned accessible public repos
 				repo_model.UserMentionedRepoCond(repoIDstr, userID),           // user has been mentioned accessible public repos
 				repo_model.UserCreateIssueRepoCond(repoIDstr, userID, isPull), // user has created issue/pr accessible public repos
@@ -1499,7 +1498,7 @@ func GetRepoIDsForIssuesOptions(opts *IssuesOptions, user *user_model.User) ([]i
 
 	opts.setupSessionNoLimit(sess)
 
-	accessCond := repo_model.AccessibleRepositoryCondition(user)
+	accessCond := repo_model.AccessibleRepositoryCondition(user, unit.TypeInvalid)
 	if err := sess.Where(accessCond).
 		Distinct("issue.repo_id").
 		Table("issue").
@@ -1903,23 +1902,17 @@ func GetRepoIssueStats(repoID, uid int64, filterMode int, isPull bool) (numOpen,
 func SearchIssueIDsByKeyword(ctx context.Context, kw string, repoIDs []int64, limit, start int) (int64, []int64, error) {
 	repoCond := builder.In("repo_id", repoIDs)
 	subQuery := builder.Select("id").From("issue").Where(repoCond)
-	// SQLite's UPPER function only transforms ASCII letters.
-	if setting.Database.UseSQLite3 {
-		kw = util.ToUpperASCII(kw)
-	} else {
-		kw = strings.ToUpper(kw)
-	}
 	cond := builder.And(
 		repoCond,
 		builder.Or(
-			builder.Like{"UPPER(name)", kw},
-			builder.Like{"UPPER(content)", kw},
+			db.BuildCaseInsensitiveLike("name", kw),
+			db.BuildCaseInsensitiveLike("content", kw),
 			builder.In("id", builder.Select("issue_id").
 				From("comment").
 				Where(builder.And(
 					builder.Eq{"type": CommentTypeComment},
 					builder.In("issue_id", subQuery),
-					builder.Like{"UPPER(content)", kw},
+					db.BuildCaseInsensitiveLike("content", kw),
 				)),
 			),
 		),
@@ -2110,7 +2103,7 @@ func updateIssueClosedNum(ctx context.Context, issue *Issue) (err error) {
 	} else {
 		err = repo_model.StatsCorrectNumClosed(ctx, issue.RepoID, false, "num_closed_issues")
 	}
-	return
+	return err
 }
 
 // FindAndUpdateIssueMentions finds users mentioned in the given content string, and saves them in the database.
@@ -2123,7 +2116,7 @@ func FindAndUpdateIssueMentions(ctx context.Context, issue *Issue, doer *user_mo
 	if err = UpdateIssueMentions(ctx, issue.ID, mentions); err != nil {
 		return nil, fmt.Errorf("UpdateIssueMentions [%d]: %v", issue.ID, err)
 	}
-	return
+	return mentions, err
 }
 
 // ResolveIssueMentionsByVisibility returns the users mentioned in an issue, removing those that
@@ -2257,7 +2250,7 @@ func ResolveIssueMentionsByVisibility(ctx context.Context, issue *Issue, doer *u
 		users = append(users, user)
 	}
 
-	return
+	return users, err
 }
 
 // UpdateIssuesMigrationsByType updates all migrated repositories' issues from gitServiceType to replace originalAuthorID to posterID
@@ -2380,7 +2373,7 @@ func DeleteIssuesByRepoID(ctx context.Context, repoID int64) (attachmentPaths []
 		return
 	}
 
-	return
+	return attachmentPaths, err
 }
 
 // RemapExternalUser ExternalUserRemappable interface
